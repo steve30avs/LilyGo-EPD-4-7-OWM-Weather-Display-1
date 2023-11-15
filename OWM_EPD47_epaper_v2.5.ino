@@ -58,9 +58,9 @@ float humidity_readings[max_readings]    = {0};
 float rain_readings[max_readings]        = {0};
 float snow_readings[max_readings]        = {0};
 
-long SleepDuration   = 60; // Sleep time in minutes, aligned to the nearest minute boundary, so if 30 will always update at 00 or 30 past the hour
-int  WakeupHour      = 8;  // Don't wakeup until after 07:00 to save battery power
-int  SleepHour       = 23; // Sleep after 23:00 to save battery power
+long SleepDuration   = 15; // Sleep time in minutes, aligned to the nearest minute boundary, so if 15 will always update at 00 or 15 or 30 or 45 past the hour
+int  WakeupHour      = 5;  // Don't wakeup until 05:00 to save battery power
+int  SleepHour       = 2;  // Sleep after 02:00 to save battery power
 long StartTime       = 0;
 long SleepTimer      = 0;
 long Delta           = 30; // ESP32 rtc speed compensation, prevents display at xx:59:yy and then xx:00:yy (one minute later) to save power
@@ -71,6 +71,7 @@ long Delta           = 30; // ESP32 rtc speed compensation, prevents display at 
 #include "opensans12b.h"
 #include "opensans18b.h"
 #include "opensans24b.h"
+#include "opensans26b.h"
 
 GFXfont  currentFont;
 uint8_t *framebuffer;
@@ -137,15 +138,44 @@ void loop() {
   // Nothing to do here
 }
 
+void print_wakeup_reason(esp_sleep_wakeup_cause_t wakeup_reason){
+
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
+    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+  }
+}
+
 void setup() {
   InitialiseSystem();
+  
   if (StartWiFi() == WL_CONNECTED && SetupTime() == true) {
-    bool WakeUp = false;                
+    bool WakeUp = false;
+    bool ForceRefresh = false;
+
+    esp_sleep_wakeup_cause_t wakeup_reason;
+    wakeup_reason = esp_sleep_get_wakeup_cause();
+    print_wakeup_reason(wakeup_reason);
+
+    // In the case that the board doesn't wake up due to the
+    // RTC timer, go ahead and make sure we refresh the data
+    // no matter what time of day this happens.
+    ForceRefresh = (wakeup_reason != ESP_SLEEP_WAKEUP_TIMER);
+    if (ForceRefresh){
+      Serial.println("Forcing the data to refresh...");
+    }
+
     if (WakeupHour > SleepHour)
       WakeUp = (CurrentHour >= WakeupHour || CurrentHour <= SleepHour); 
     else                             
-      WakeUp = (CurrentHour >= WakeupHour && CurrentHour <= SleepHour);                              
-    if (WakeUp) {
+      WakeUp = (CurrentHour >= WakeupHour && CurrentHour <= SleepHour);    
+
+    if (WakeUp || ForceRefresh) {
       byte Attempts = 1;
       bool RxWeather  = false;
       bool RxForecast = false;
@@ -191,12 +221,13 @@ bool DecodeWeather(WiFiClient& json, String Type) {
     // All Serial.println statements are for diagnostic purposes and some are not required, remove if not needed with //
     //WxConditions[0].lon         = root["coord"]["lon"].as<float>();              Serial.println(" Lon: " + String(WxConditions[0].lon));
     //WxConditions[0].lat         = root["coord"]["lat"].as<float>();              Serial.println(" Lat: " + String(WxConditions[0].lat));
-    WxConditions[0].Main0       = root["weather"][0]["main"].as<char*>();        Serial.println("Main: " + String(WxConditions[0].Main0));
-    WxConditions[0].Forecast0   = root["weather"][0]["description"].as<char*>(); Serial.println("For0: " + String(WxConditions[0].Forecast0));
-    //WxConditions[0].Forecast1   = root["weather"][1]["description"].as<char*>(); Serial.println("For1: " + String(WxConditions[0].Forecast1));
-    //WxConditions[0].Forecast2   = root["weather"][2]["description"].as<char*>(); Serial.println("For2: " + String(WxConditions[0].Forecast2));
-    WxConditions[0].Icon        = root["weather"][0]["icon"].as<char*>();        Serial.println("Icon: " + String(WxConditions[0].Icon));
+    WxConditions[0].Main0       = root["weather"][0]["main"].as<const char*>();        Serial.println("Main: " + String(WxConditions[0].Main0));
+    WxConditions[0].Forecast0   = root["weather"][0]["description"].as<const char*>(); Serial.println("For0: " + String(WxConditions[0].Forecast0));
+    //WxConditions[0].Forecast1   = root["weather"][1]["description"].as<const char*>(); Serial.println("For1: " + String(WxConditions[0].Forecast1));
+    //WxConditions[0].Forecast2   = root["weather"][2]["description"].as<const char*>(); Serial.println("For2: " + String(WxConditions[0].Forecast2));
+    WxConditions[0].Icon        = root["weather"][0]["icon"].as<const char*>();        Serial.println("Icon: " + String(WxConditions[0].Icon));
     WxConditions[0].Temperature = root["main"]["temp"].as<float>();              Serial.println("Temp: " + String(WxConditions[0].Temperature));
+    WxConditions[0].Feelslike   = root["main"]["feels_like"].as<float>();        Serial.println("Feels: " + String(WxConditions[0].Feelslike));
     WxConditions[0].Pressure    = root["main"]["pressure"].as<float>();          Serial.println("Pres: " + String(WxConditions[0].Pressure));
     WxConditions[0].Humidity    = root["main"]["humidity"].as<float>();          Serial.println("Humi: " + String(WxConditions[0].Humidity));
     WxConditions[0].Low         = root["main"]["temp_min"].as<float>();          Serial.println("TLow: " + String(WxConditions[0].Low));
@@ -207,7 +238,7 @@ bool DecodeWeather(WiFiClient& json, String Type) {
     WxConditions[0].Visibility  = root["visibility"].as<int>();                  Serial.println("Visi: " + String(WxConditions[0].Visibility)); // in metres
     WxConditions[0].Rainfall    = root["rain"]["1h"].as<float>();                Serial.println("Rain: " + String(WxConditions[0].Rainfall));
     WxConditions[0].Snowfall    = root["snow"]["1h"].as<float>();                Serial.println("Snow: " + String(WxConditions[0].Snowfall));
-    //WxConditions[0].Country     = root["sys"]["country"].as<char*>();            Serial.println("Ctry: " + String(WxConditions[0].Country));
+    //WxConditions[0].Country     = root["sys"]["country"].as<const char*>();            Serial.println("Ctry: " + String(WxConditions[0].Country));
     WxConditions[0].Sunrise     = root["sys"]["sunrise"].as<int>();              Serial.println("SRis: " + String(WxConditions[0].Sunrise));
     WxConditions[0].Sunset      = root["sys"]["sunset"].as<int>();               Serial.println("SSet: " + String(WxConditions[0].Sunset));
     WxConditions[0].Timezone    = root["timezone"].as<int>();                    Serial.println("TZon: " + String(WxConditions[0].Timezone));
@@ -224,17 +255,17 @@ bool DecodeWeather(WiFiClient& json, String Type) {
       WxForecast[r].High              = list[r]["main"]["temp_max"].as<float>();          Serial.println("THig: " + String(WxForecast[r].High));
       WxForecast[r].Pressure          = list[r]["main"]["pressure"].as<float>();          Serial.println("Pres: " + String(WxForecast[r].Pressure));
       WxForecast[r].Humidity          = list[r]["main"]["humidity"].as<float>();          Serial.println("Humi: " + String(WxForecast[r].Humidity));
-      //WxForecast[r].Forecast0         = list[r]["weather"][0]["main"].as<char*>();        Serial.println("For0: " + String(WxForecast[r].Forecast0));
-      //WxForecast[r].Forecast1         = list[r]["weather"][1]["main"].as<char*>();        Serial.println("For1: " + String(WxForecast[r].Forecast1));
-      //WxForecast[r].Forecast2         = list[r]["weather"][2]["main"].as<char*>();        Serial.println("For2: " + String(WxForecast[r].Forecast2));
-      WxForecast[r].Icon              = list[r]["weather"][0]["icon"].as<char*>();        Serial.println("Icon: " + String(WxForecast[r].Icon));
-      //WxForecast[r].Description       = list[r]["weather"][0]["description"].as<char*>(); Serial.println("Desc: " + String(WxForecast[r].Description));
+      //WxForecast[r].Forecast0         = list[r]["weather"][0]["main"].as<const char*>();        Serial.println("For0: " + String(WxForecast[r].Forecast0));
+      //WxForecast[r].Forecast1         = list[r]["weather"][1]["main"].as<const char*>();        Serial.println("For1: " + String(WxForecast[r].Forecast1));
+      //WxForecast[r].Forecast2         = list[r]["weather"][2]["main"].as<const char*>();        Serial.println("For2: " + String(WxForecast[r].Forecast2));
+      WxForecast[r].Icon              = list[r]["weather"][0]["icon"].as<const char*>();        Serial.println("Icon: " + String(WxForecast[r].Icon));
+      //WxForecast[r].Description       = list[r]["weather"][0]["description"].as<const char*>(); Serial.println("Desc: " + String(WxForecast[r].Description));
       //WxForecast[r].Cloudcover        = list[r]["clouds"]["all"].as<int>();               Serial.println("CCov: " + String(WxForecast[r].Cloudcover)); // in % of cloud cover
       //WxForecast[r].Windspeed         = list[r]["wind"]["speed"].as<float>();             Serial.println("WSpd: " + String(WxForecast[r].Windspeed));
       //WxForecast[r].Winddir           = list[r]["wind"]["deg"].as<float>();               Serial.println("WDir: " + String(WxForecast[r].Winddir));
       WxForecast[r].Rainfall          = list[r]["rain"]["3h"].as<float>();                Serial.println("Rain: " + String(WxForecast[r].Rainfall));
       WxForecast[r].Snowfall          = list[r]["snow"]["3h"].as<float>();                Serial.println("Snow: " + String(WxForecast[r].Snowfall));
-      WxForecast[r].Period            = list[r]["dt_txt"].as<char*>();                    Serial.println("Peri: " + String(WxForecast[r].Period));
+      WxForecast[r].Period            = list[r]["dt_txt"].as<const char*>();                    Serial.println("Peri: " + String(WxForecast[r].Period));
     }
     //------------------------------------------
     float pressure_trend = WxForecast[0].Pressure - WxForecast[2].Pressure; // Measure pressure slope between ~now and later
@@ -267,7 +298,7 @@ bool obtainWeatherData(WiFiClient & client, const String & RequestType) {
   const String units = (Units == "M" ? "metric" : "imperial");
   client.stop(); // close connection before sending a new request
   HTTPClient http;
-  String uri = "/data/2.5/" + RequestType + "?q=" + City + "," + Country + "&APPID=" + apikey + "&mode=json&units=" + units + "&lang=" + Language;
+  String uri = "/data/2.5/" + RequestType + "?q=" + "City%20ville" + "," + "CA" + "&APPID=" + apikey + "&mode=json&units=" + units + "&lang=" + Language;
   if (RequestType != "weather")
   {
     uri += "&cnt=" + String(max_readings);
@@ -338,7 +369,7 @@ double NormalizedMoonPhase(int d, int m, int y) {
 }
 
 void DisplayWeather() {                          // 4.7" e-paper display is 960x540 resolution
-  DisplayStatusSection(600, 20, wifi_signal);    // Wi-Fi signal strength and Battery voltage
+  DisplayStatusSection(575, 2, wifi_signal);    // Wi-Fi signal strength and Battery voltage
   DisplayGeneralInfoSection();                   // Top line of the display
   DisplayDisplayWindSection(137, 150, WxConditions[0].Winddir, WxConditions[0].Windspeed, 100);
   DisplayAstronomySection(5, 255);               // Astronomy section Sun rise/set, Moon phase and Moon icon
@@ -351,7 +382,7 @@ void DisplayGeneralInfoSection() {
   setFont(OpenSans10B);
   drawString(5, 2, City, LEFT);
   setFont(OpenSans8B);
-  drawString(500, 2, Date_str + "  @   " + Time_str, LEFT);
+  drawString(450, 2, Date_str + "  @   " + Time_str, LEFT);
 }
 
 void DisplayWeatherIcon(int x, int y) {
@@ -422,10 +453,10 @@ String WindDegToOrdinalDirection(float winddirection) {
 }
 
 void DisplayTemperatureSection(int x, int y) {
+  setFont(OpenSans26B);
+  drawString(x - 30, y - 20, String(WxConditions[0].Temperature, 1) + "°    ", LEFT);
   setFont(OpenSans18B);
-  drawString(x - 30, y, String(WxConditions[0].Temperature, 1) + "°    " + String(WxConditions[0].Humidity, 0) + "%", LEFT);
-  setFont(OpenSans12B);
-  drawString(x + 10, y + 35, String(WxConditions[0].High, 0) + "° | " + String(WxConditions[0].Low, 0) + "°", CENTER); // Show forecast high and Low
+  drawString(x + 160, y + 25, "Humidex: " + String(WxConditions[0].Feelslike, 0) + "° | " + String(WxConditions[0].Humidity, 0) + "%", CENTER); // Show forecast high and Low
 }
 
 void DisplayForecastTextSection(int x, int y) {
@@ -632,7 +663,7 @@ void DrawPressureAndTrend(int x, int y, float pressure, String slope) {
 
 void DisplayStatusSection(int x, int y, int rssi) {
   setFont(OpenSans8B);
-  DrawRSSI(x + 305, y + 15, rssi);
+  DrawRSSI(x + 325, y + 24, rssi);
   DrawBattery(x + 150, y);
 }
 
@@ -689,13 +720,13 @@ void DrawBattery(int x, int y) {
   float voltage = analogRead(36) / 4096.0 * 6.566 * (vref / 1000.0);
   if (voltage > 1 ) { // Only display if there is a valid reading
     Serial.println("\nVoltage = " + String(voltage));
-    percentage = 2836.9625 * pow(voltage, 4) - 43987.4889 * pow(voltage, 3) + 255233.8134 * pow(voltage, 2) - 656689.7123 * voltage + 632041.7303;
-    if (voltage >= 4.20) percentage = 100;
-    if (voltage <= 3.20) percentage = 0;  // orig 3.5
-    drawRect(x + 25, y - 14, 40, 15, Black);
-    fillRect(x + 65, y - 10, 4, 7, Black);
-    fillRect(x + 27, y - 12, 36 * percentage / 100.0, 11, Black);
-    drawString(x + 85, y - 14, String(percentage) + "%  " + String(voltage, 1) + "v", LEFT);
+    percentage = (247.4 * pow(voltage, 3)) - (1904.9 * pow(voltage, 2)) + (4833.7 * voltage) - 4037.1; // LiFePO4 logic created with Excel line-of-best-fit 3rd order polynomial from Jackery LiFePO4 voltage tables
+    if (voltage >= 3.40) percentage = 100;
+    if (voltage <= 3.00) percentage = 0;  // orig 3.5 and 3.2, LiFePO4 is lower
+    drawRect(x + 25, y, 40, 15, Black);
+    fillRect(x + 65, y + 4, 4, 7, Black);
+    fillRect(x + 27, y + 2, 36 * percentage / 100.0, 11, DarkGrey);
+    drawString(x + 85, y, String(percentage) + "%  " + String(voltage, 2) + "v", LEFT);
   }
 }
 
